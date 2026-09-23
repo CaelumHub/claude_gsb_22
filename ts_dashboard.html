@@ -663,7 +663,94 @@ textarea.form-input {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-items: center;
 }
+
+.alert-item.selected {
+  background: var(--accent-dim);
+}
+
+.alert-checkbox {
+  flex-shrink: 0;
+  align-self: center;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---- Alert Groups ---- */
+.alert-group-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+  border: 1px solid transparent;
+  margin-bottom: 4px;
+}
+
+.alert-group-item:hover {
+  background: var(--bg-hover);
+}
+
+.alert-group-item.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.alert-group-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.alert-group-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-light);
+  font-family: var(--font-mono);
+}
+
+.alert-group-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+  margin-top: 4px;
+  overflow: hidden;
+  display: flex;
+}
+
+.alert-group-bar span {
+  height: 100%;
+}
+
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-wrap: wrap;
+}
+
+.batch-toolbar .batch-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.batch-toolbar .spacer { flex: 1; }
+
 
 /* ---- Time Range Picker ---- */
 .time-picker {
@@ -1331,18 +1418,21 @@ textarea.form-input {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
           <div class="section-title">🔔 异常告警列表</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <select class="form-select" id="alertStatusFilter" style="width:auto" onchange="filterAlerts()">
+            <select class="form-select" id="alertStatusFilter" style="width:auto" onchange="onAlertFilterChange()">
               <option value="">全部状态</option>
               <option value="active">活跃</option>
               <option value="acknowledged">已确认</option>
               <option value="resolved">已解决</option>
               <option value="suppressed">已抑制</option>
             </select>
-            <select class="form-select" id="alertSeverityFilter" style="width:auto" onchange="filterAlerts()">
+            <select class="form-select" id="alertSeverityFilter" style="width:auto" onchange="onAlertFilterChange()">
               <option value="">全部级别</option>
               <option value="critical">严重</option>
               <option value="warning">警告</option>
               <option value="info">信息</option>
+            </select>
+            <select class="form-select" id="alertMetricFilter" style="width:auto;max-width:180px" onchange="onAlertFilterChange()">
+              <option value="">全部指标</option>
             </select>
             <button class="btn" onclick="loadAlerts()">🔄 刷新</button>
           </div>
@@ -1367,9 +1457,56 @@ textarea.form-input {
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-body" style="padding:0">
-            <div id="alertsList"></div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">📈 告警趋势</div>
+            <div class="time-picker">
+              <button class="time-btn" data-trend-range="3600" onclick="setTrendRange(3600)">近1小时</button>
+              <button class="time-btn active" data-trend-range="21600" onclick="setTrendRange(21600)">近6小时</button>
+              <button class="time-btn" data-trend-range="86400" onclick="setTrendRange(86400)">近24小时</button>
+              <button class="time-btn" data-trend-range="172800" onclick="setTrendRange(172800)">近2天</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-container" id="alertTrendChart" style="height:260px"></div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div class="card" style="width:260px;flex-shrink:0">
+            <div class="card-header">
+              <div class="card-title">📂 按指标分组</div>
+              <span class="badge badge-info" id="alertGroupCount">0</span>
+            </div>
+            <div class="card-body" id="alertGroupsList" style="max-height:520px;overflow-y:auto">
+              <div class="empty-state"><div class="empty-text">暂无分组</div></div>
+            </div>
+          </div>
+
+          <div class="card" style="flex:1;min-width:320px">
+            <div class="batch-toolbar">
+              <input type="checkbox" class="alert-checkbox" id="alertSelectAll" onchange="toggleSelectAllAlerts(this.checked)">
+              <span class="batch-info">已选 <strong id="selectedAlertCount">0</strong> 条</span>
+              <button class="btn btn-sm" onclick="batchUpdateAlerts('acknowledge')" id="batchAckBtn">批量确认</button>
+              <button class="btn btn-sm btn-danger" onclick="batchUpdateAlerts('resolve')" id="batchResolveBtn">批量解决</button>
+              <span class="spacer"></span>
+              <span class="batch-info">按时间范围操作：</span>
+              <input class="form-input" id="batchStart" type="datetime-local" style="width:auto;padding:4px 8px;font-size:11px">
+              <span style="color:var(--text-muted);font-size:11px">至</span>
+              <input class="form-input" id="batchEnd" type="datetime-local" style="width:auto;padding:4px 8px;font-size:11px">
+              <select class="form-select" style="width:auto;padding:4px 8px;font-size:11px" onchange="if(this.value)setBatchRangePreset(Number(this.value));this.value=''">
+                <option value="">范围预设</option>
+                <option value="900">近15分钟</option>
+                <option value="3600">近1小时</option>
+                <option value="21600">近6小时</option>
+                <option value="86400">近24小时</option>
+              </select>
+              <button class="btn btn-sm" onclick="batchUpdateByTimeRange('acknowledge')">范围确认</button>
+              <button class="btn btn-sm btn-danger" onclick="batchUpdateByTimeRange('resolve')">范围解决</button>
+            </div>
+            <div class="card-body" style="padding:0">
+              <div id="alertsList"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1527,11 +1664,16 @@ let state = {
   selectedDashMetrics: new Set(['cpu.usage', 'memory.usage']),
   historyData: null,
   timeRangeMinutes: 15,
+  alertGroups: [],
+  selectedAlertIds: new Set(),
+  alertTrendRange: 21600,
+  alertTrendLoaded: false,
 };
 
 let lineChart = null;
 let heatmapChart = null;
 let historyChartInstance = null;
+let alertTrendChart = null;
 let refreshTimer = null;
 
 // ====== Init ======
@@ -1561,6 +1703,12 @@ function switchPage(page) {
 
   // Close mobile sidebar
   document.getElementById('sidebar').classList.remove('open');
+
+  // Charts initialized while hidden need a resize once visible
+  if (page === 'alerts') {
+    setTimeout(() => alertTrendChart?.resize(), 50);
+    loadAlertTrend();
+  }
 
   refreshCurrentPage();
 }
@@ -1600,7 +1748,7 @@ async function loadData() {
 async function refreshCurrentPage() {
   switch (state.currentPage) {
     case 'dashboard': await loadDashboard(); break;
-    case 'alerts': await loadAlerts(); break;
+    case 'alerts': await loadAlerts(); loadAlertTrend(); break;
     case 'history': break; // Manual refresh
     case 'rules': await loadRules(); break;
     case 'sources': await loadSources(); break;
@@ -2078,14 +2226,82 @@ function exportHistory() {
 
 // ====== Alerts ======
 async function loadAlerts() {
-  const data = await api('/api/alerts');
+  const params = new URLSearchParams({ limit: '500' });
+  const metric = document.getElementById('alertMetricFilter')?.value;
+  if (metric) params.set('metric', metric);
+
+  const data = await api(`/api/alerts?${params}`);
   if (!data) return;
   state.alerts = data.alerts || [];
+  await loadAlertGroups();
   renderAlerts();
   updateAlertBadge();
 }
 
-function filterAlerts() {
+async function loadAlertGroups() {
+  const params = new URLSearchParams({ group_by: 'metric' });
+  const data = await api(`/api/alerts/groups?${params}`);
+  if (!data) return;
+  state.alertGroups = data.groups || [];
+  renderAlertGroups();
+  updateMetricFilterOptions();
+}
+
+function updateMetricFilterOptions() {
+  const select = document.getElementById('alertMetricFilter');
+  if (!select) return;
+  const current = select.value;
+  const options = ['<option value="">全部指标</option>']
+    .concat(state.alertGroups.map(g => `<option value="${escapeHtml(g.key)}">${escapeHtml(g.key)}</option>`));
+  select.innerHTML = options.join('');
+  // Keep selection if the metric still exists
+  select.value = state.alertGroups.some(g => g.key === current) ? current : '';
+}
+
+function renderAlertGroups() {
+  const container = document.getElementById('alertGroupsList');
+  const selectedMetric = document.getElementById('alertMetricFilter')?.value || '';
+  document.getElementById('alertGroupCount').textContent = state.alertGroups.length;
+
+  if (!state.alertGroups.length) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-text">暂无分组</div></div>';
+    return;
+  }
+
+  const maxTotal = Math.max(...state.alertGroups.map(g => g.total), 1);
+  container.innerHTML = state.alertGroups.map(g => {
+    const activePct = (g.active / g.total) * 100;
+    const ackPct = (g.acknowledged / g.total) * 100;
+    const resolvedPct = (g.resolved / g.total) * 100;
+    return `
+      <div class="alert-group-item ${g.key === selectedMetric ? 'active' : ''}" onclick="selectAlertGroup('${escapeHtml(g.key)}')">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;justify-content:space-between;gap:8px">
+            <span class="alert-group-name">${escapeHtml(g.key)}</span>
+            <span class="alert-group-count">${g.total}</span>
+          </div>
+          <div class="alert-group-bar">
+            <span style="width:${activePct}%;background:var(--danger)"></span>
+            <span style="width:${ackPct}%;background:var(--warning)"></span>
+            <span style="width:${resolvedPct}%;background:var(--success)"></span>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:3px;font-family:var(--font-mono)">
+            ${g.active ? `<span style="color:var(--danger)">●${g.active}</span> ` : ''}${g.acknowledged ? `<span style="color:var(--warning)">●${g.acknowledged}</span> ` : ''}${g.resolved ? `<span style="color:var(--success)">●${g.resolved}</span>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function selectAlertGroup(metric) {
+  const select = document.getElementById('alertMetricFilter');
+  select.value = select.value === metric ? '' : metric;
+  onAlertFilterChange();
+}
+
+function onAlertFilterChange() {
+  state.selectedAlertIds.clear();
   renderAlerts();
 }
 
@@ -2108,6 +2324,7 @@ function renderAlerts() {
   const container = document.getElementById('alertsList');
   if (!filtered.length) {
     container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">暂无告警</div></div>';
+    updateSelectionUI(filtered);
     return;
   }
 
@@ -2119,17 +2336,20 @@ function renderAlerts() {
     const statusText = a.status === 'active' ? '活跃' :
                        a.status === 'acknowledged' ? '已确认' :
                        a.status === 'resolved' ? '已解决' : '已抑制';
+    const checked = state.selectedAlertIds.has(a.id) ? 'checked' : '';
 
     return `
-      <div class="alert-item">
+      <div class="alert-item ${checked ? 'selected' : ''}">
+        <input type="checkbox" class="alert-checkbox" ${checked}
+               onchange="toggleAlertSelection('${a.id}', this.checked)">
         <div class="alert-severity ${a.severity || 'warning'}"></div>
         <div class="alert-content">
-          <div class="alert-title">${a.metric} · ${a.rule_name || a.algorithm || '异常'}</div>
+          <div class="alert-title">${escapeHtml(a.metric)} · ${escapeHtml(a.rule_name || a.algorithm || '异常')}</div>
           <div class="alert-meta">
             <span class="badge badge-${severityClass}">${a.severity || 'warning'}</span>
             <span>值: <strong>${a.value?.toFixed(2) ?? '-'}</strong></span>
             <span>评分: ${a.score?.toFixed(2) ?? '-'}</span>
-            <span>算法: ${a.algorithm || '-'}</span>
+            <span>算法: ${escapeHtml(a.algorithm || '-')}</span>
             <span>${formatTime(a.timestamp)}</span>
           </div>
         </div>
@@ -2141,16 +2361,220 @@ function renderAlerts() {
       </div>
     `;
   }).join('');
+
+  updateSelectionUI(filtered);
+}
+
+function toggleAlertSelection(id, checked) {
+  if (checked) state.selectedAlertIds.add(id);
+  else state.selectedAlertIds.delete(id);
+  renderAlerts();
+}
+
+function toggleSelectAllAlerts(checked) {
+  const visible = getVisibleAlerts();
+  visible.forEach(a => {
+    if (checked) state.selectedAlertIds.add(a.id);
+    else state.selectedAlertIds.delete(a.id);
+  });
+  renderAlerts();
+}
+
+function getVisibleAlerts() {
+  const statusFilter = document.getElementById('alertStatusFilter').value;
+  const severityFilter = document.getElementById('alertSeverityFilter').value;
+  return state.alerts.filter(a =>
+    (!statusFilter || a.status === statusFilter) &&
+    (!severityFilter || a.severity === severityFilter)
+  );
+}
+
+function updateSelectionUI(visible) {
+  const selectAll = document.getElementById('alertSelectAll');
+  const visibleIds = visible.map(a => a.id);
+  const selectedVisible = visibleIds.filter(id => state.selectedAlertIds.has(id));
+  selectAll.checked = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+  selectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+  document.getElementById('selectedAlertCount').textContent = state.selectedAlertIds.size;
+}
+
+async function batchUpdateAlerts(action) {
+  const ids = [...state.selectedAlertIds];
+  if (!ids.length) {
+    showToast('请先勾选要操作的告警', 'error');
+    return;
+  }
+  const actionText = action === 'acknowledge' ? '批量确认' : '批量解决';
+  if (!confirm(`确定对选中的 ${ids.length} 条告警执行「${actionText}」？`)) return;
+
+  const result = await api('/api/alerts/batch', {
+    method: 'POST',
+    body: { action, alert_ids: ids },
+  });
+  if (result?.success) {
+    showToast(`${actionText}完成：更新 ${result.updated} 条`, 'success');
+    state.selectedAlertIds.clear();
+    await loadAlerts();
+    loadAlertTrend();
+  } else {
+    showToast('操作失败', 'error');
+  }
+}
+
+async function batchUpdateByTimeRange(action) {
+  const startVal = document.getElementById('batchStart').value;
+  const endVal = document.getElementById('batchEnd').value;
+  if (!startVal || !endVal) {
+    showToast('请先选择时间范围', 'error');
+    return;
+  }
+  const start = new Date(startVal).getTime() / 1000;
+  const end = new Date(endVal).getTime() / 1000;
+  if (start >= end) {
+    showToast('开始时间必须早于结束时间', 'error');
+    return;
+  }
+
+  // Only operate on alerts still open, honoring current severity/status filters
+  const severity = document.getElementById('alertSeverityFilter').value || null;
+  const actionText = action === 'acknowledge' ? '确认' : '解决';
+  if (!confirm(`确定对 ${formatTime(start)} ~ ${formatTime(end)} 时间范围内的告警执行「${actionText}」？`)) return;
+
+  const result = await api('/api/alerts/batch', {
+    method: 'POST',
+    body: {
+      action,
+      start,
+      end,
+      severity,
+      statuses: action === 'acknowledge'
+        ? ['active', 'suppressed']
+        : ['active', 'acknowledged', 'suppressed'],
+    },
+  });
+  if (result?.success) {
+    showToast(`范围${actionText}完成：匹配 ${result.matched} 条，更新 ${result.updated} 条`, 'success');
+    state.selectedAlertIds.clear();
+    await loadAlerts();
+    loadAlertTrend();
+  } else {
+    showToast(result?.error || '操作失败', 'error');
+  }
+}
+
+function setBatchRangePreset(seconds) {
+  const now = new Date();
+  const start = new Date(now.getTime() - seconds * 1000);
+  document.getElementById('batchStart').value = formatDatetimeLocal(start);
+  document.getElementById('batchEnd').value = formatDatetimeLocal(now);
+}
+
+// ====== Alert Trend ======
+function setTrendRange(seconds) {
+  state.alertTrendRange = seconds;
+  document.querySelectorAll('[data-trend-range]').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.trendRange) === seconds);
+  });
+  loadAlertTrend();
+}
+
+async function loadAlertTrend() {
+  if (!alertTrendChart) return;
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - state.alertTrendRange;
+  // Avoid overlapping requests from the 2s auto-refresh timer
+  if (state._trendLoading) return;
+  state._trendLoading = true;
+  try {
+    const data = await api(`/api/alerts/trend?start=${start}&end=${end}`);
+    if (data) renderAlertTrend(data);
+  } finally {
+    state._trendLoading = false;
+  }
+}
+
+function renderAlertTrend(data) {
+  const buckets = data.buckets || [];
+  const seriesDefs = [
+    { key: 'active', name: '活跃', color: '#ef4444' },
+    { key: 'acknowledged', name: '已确认', color: '#f59e0b' },
+    { key: 'resolved', name: '已解决', color: '#10b981' },
+    { key: 'suppressed', name: '已抑制', color: '#3b82f6' },
+  ];
+
+  const series = seriesDefs.map(s => ({
+    name: s.name,
+    type: 'bar',
+    stack: 'alerts',
+    barCategoryGap: '15%',
+    itemStyle: { color: s.color },
+    data: buckets.map(b => [b.timestamp * 1000, b[s.key]]),
+  }));
+
+  // Total count overlay line
+  series.push({
+    name: '总数',
+    type: 'line',
+    smooth: true,
+    symbol: 'none',
+    lineStyle: { width: 2, color: '#e2e8f0' },
+    itemStyle: { color: '#e2e8f0' },
+    z: 10,
+    data: buckets.map(b => [b.timestamp * 1000, b.total]),
+  });
+
+  const intervalLabel = data.interval >= 3600
+    ? `${data.interval / 3600}小时`
+    : data.interval >= 60 ? `${data.interval / 60}分钟` : `${data.interval}秒`;
+
+  alertTrendChart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(15,23,42,0.95)',
+      borderColor: 'rgba(255,255,255,0.1)',
+      textStyle: { color: '#e2e8f0', fontSize: 11, fontFamily: 'JetBrains Mono' },
+    },
+    legend: {
+      top: 0,
+      textStyle: { color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono' },
+    },
+    grid: { left: 45, right: 20, top: 32, bottom: 28 },
+    xAxis: {
+      type: 'time',
+      axisLine: { lineStyle: { color: '#1e2d42' } },
+      axisLabel: { color: '#64748b', fontSize: 10, fontFamily: 'JetBrains Mono' },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      name: `每${intervalLabel}`,
+      nameTextStyle: { color: '#64748b', fontSize: 10 },
+      axisLine: { lineStyle: { color: '#1e2d42' } },
+      axisLabel: { color: '#64748b', fontSize: 10, fontFamily: 'JetBrains Mono' },
+      splitLine: { lineStyle: { color: '#1e2d42', type: 'dashed' } },
+    },
+    series,
+    animation: false,
+  }, true);
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
 async function ackAlert(id) {
   const result = await api('/api/alerts/acknowledge', { method: 'POST', body: { alert_id: id } });
-  if (result?.success) { showToast('已确认', 'success'); await loadAlerts(); }
+  if (result?.success) { showToast('已确认', 'success'); await loadAlerts(); loadAlertTrend(); }
 }
 
 async function resolveAlert(id) {
   const result = await api('/api/alerts/resolve', { method: 'POST', body: { alert_id: id } });
-  if (result?.success) { showToast('已解决', 'success'); await loadAlerts(); }
+  if (result?.success) { showToast('已解决', 'success'); await loadAlerts(); loadAlertTrend(); }
 }
 
 function updateAlertBadge() {
@@ -2296,11 +2720,13 @@ function initCharts() {
   lineChart = echarts.init(document.getElementById('dashLineChart'));
   heatmapChart = echarts.init(document.getElementById('dashHeatmap'));
   historyChartInstance = echarts.init(document.getElementById('historyChart'));
+  alertTrendChart = echarts.init(document.getElementById('alertTrendChart'));
 
   window.addEventListener('resize', () => {
     lineChart?.resize();
     heatmapChart?.resize();
     historyChartInstance?.resize();
+    alertTrendChart?.resize();
   });
 
   // Set initial time range
@@ -2308,6 +2734,11 @@ function initCharts() {
   const start = new Date(now.getTime() - 15 * 60000);
   document.getElementById('historyStart').value = formatDatetimeLocal(start);
   document.getElementById('historyEnd').value = formatDatetimeLocal(now);
+
+  // Default batch-operation range: last 1 hour
+  const batchStart = new Date(now.getTime() - 3600 * 1000);
+  document.getElementById('batchStart').value = formatDatetimeLocal(batchStart);
+  document.getElementById('batchEnd').value = formatDatetimeLocal(now);
 }
 
 // ====== Header Stats ======

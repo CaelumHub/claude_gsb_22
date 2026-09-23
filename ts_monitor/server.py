@@ -97,6 +97,10 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard(query)
             elif path == '/api/alerts':
                 self._handle_get_alerts(query)
+            elif path == '/api/alerts/groups':
+                self._handle_alert_groups(query)
+            elif path == '/api/alerts/trend':
+                self._handle_alert_trend(query)
             elif path == '/api/rules':
                 self._handle_get_rules()
             elif path == '/api/sources':
@@ -126,6 +130,8 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
                 self._handle_acknowledge_alert()
             elif path == '/api/alerts/resolve':
                 self._handle_resolve_alert()
+            elif path == '/api/alerts/batch':
+                self._handle_batch_alerts()
             elif path == '/api/rules':
                 self._handle_add_rule()
             elif path == '/api/sources':
@@ -339,10 +345,81 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
         """Get alerts list."""
         status = query.get("status", [None])[0]
         severity = query.get("severity", [None])[0]
+        metric = query.get("metric", [None])[0]
         limit = int(query.get("limit", [200])[0])
+        start = float(query["start"][0]) if "start" in query else None
+        end = float(query["end"][0]) if "end" in query else None
 
-        alerts = self.storage.get_alerts(status=status, severity=severity, limit=limit)
+        alerts = self.storage.get_alerts(
+            status=status, severity=severity, metric=metric,
+            start=start, end=end, limit=limit
+        )
         self._send_json({"alerts": alerts, "count": len(alerts)})
+
+    def _handle_alert_groups(self, query: Dict):
+        """Get alerts grouped by metric (default) with counts."""
+        group_by = query.get("group_by", ["metric"])[0]
+        if group_by not in ("metric", "severity", "rule_name"):
+            group_by = "metric"
+        status = query.get("status", [None])[0]
+        severity = query.get("severity", [None])[0]
+        start = float(query["start"][0]) if "start" in query else None
+        end = float(query["end"][0]) if "end" in query else None
+
+        groups = self.storage.get_alert_groups(
+            group_by=group_by, status=status, severity=severity,
+            start=start, end=end
+        )
+        self._send_json({
+            "groups": groups,
+            "group_by": group_by,
+            "count": len(groups),
+            "total_alerts": sum(g["total"] for g in groups),
+        })
+
+    def _handle_alert_trend(self, query: Dict):
+        """Get alert count trend buckets over a time range."""
+        end = float(query.get("end", [time.time()])[0])
+        # Default: last 1 hour
+        start = float(query.get("start", [end - 3600])[0])
+        interval = int(query["interval"][0]) if "interval" in query else None
+
+        trend = self.storage.get_alert_trend(start, end, interval)
+        self._send_json(trend)
+
+    def _handle_batch_alerts(self):
+        """Batch acknowledge/resolve alerts by ids or by time-range filter."""
+        body = self._read_body()
+        action = body.get("action")
+        if action not in ("acknowledge", "resolve"):
+            self._send_error("'action' must be 'acknowledge' or 'resolve'")
+            return
+
+        alert_ids = body.get("alert_ids")
+        metric = body.get("metric")
+        severity = body.get("severity")
+        start = body.get("start")
+        end = body.get("end")
+
+        # Require an explicit selection criterion
+        if not alert_ids and not any([metric, severity, start is not None, end is not None]):
+            self._send_error(
+                "Provide 'alert_ids' or at least one filter "
+                "(metric/severity/start/end) to scope the batch operation"
+            )
+            return
+
+        result = self.storage.batch_update_alerts(
+            action,
+            alert_ids=alert_ids,
+            metric=metric,
+            severity=severity,
+            start=float(start) if start is not None else None,
+            end=float(end) if end is not None else None,
+            include_statuses=body.get("statuses"),
+        )
+        self._send_json(result)
+
 
     def _handle_acknowledge_alert(self):
         """Acknowledge an alert."""

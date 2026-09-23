@@ -35,7 +35,7 @@ python3 server.py 8080
 1. **实时仪表盘** - ECharts 多指标曲线图、热力图、统计卡片
 2. **数据源配置** - 管理 API/模拟器/文件数据源
 3. **历史查询** - 时间范围选择、LTTB 降采样、CSV 导出
-4. **异常告警** - 告警列表、状态过滤、确认/解决操作
+4. **异常告警** - 告警列表、状态过滤、按指标分组、批量确认/解决、按时间范围批量操作、告警趋势图
 5. **规则管理** - CRUD 检测规则、多算法配置
 
 ### 后端核心能力
@@ -95,9 +95,10 @@ curl -X DELETE http://localhost:8080/api/rules/rule_id
 ### 告警管理
 
 ```bash
-# 获取告警
+# 获取告警（支持状态、级别、指标、时间范围过滤）
 curl http://localhost:8080/api/alerts
 curl "http://localhost:8080/api/alerts?status=active&severity=critical"
+curl "http://localhost:8080/api/alerts?metric=cpu.usage&start=1695000000&end=1695003600"
 
 # 确认告警
 curl -X POST http://localhost:8080/api/alerts/acknowledge \
@@ -106,6 +107,22 @@ curl -X POST http://localhost:8080/api/alerts/acknowledge \
 # 解决告警
 curl -X POST http://localhost:8080/api/alerts/resolve \
   -d '{"alert_id":"alert_xxx"}'
+
+# 批量确认/解决（按告警 ID 列表）
+curl -X POST http://localhost:8080/api/alerts/batch \
+  -H "Content-Type: application/json" \
+  -d '{"action":"acknowledge","alert_ids":["alert_1","alert_2"]}'
+
+# 按时间范围批量操作（可叠加 metric/severity/statuses 过滤条件）
+curl -X POST http://localhost:8080/api/alerts/batch \
+  -H "Content-Type: application/json" \
+  -d '{"action":"resolve","start":1695000000,"end":1695003600,"severity":"critical"}'
+
+# 按指标分组查看告警数量（也可 group_by=severity 或 rule_name）
+curl "http://localhost:8080/api/alerts/groups?group_by=metric"
+
+# 告警趋势（按时间桶统计总数及各状态数量，interval 不传则自动选择）
+curl "http://localhost:8080/api/alerts/trend?start=1694917200&end=1695003600&interval=300"
 ```
 
 ### 模拟器

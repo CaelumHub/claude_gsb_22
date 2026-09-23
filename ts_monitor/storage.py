@@ -9,6 +9,7 @@ Time-Series Storage Engine
 import json
 import os
 import time
+import math
 import threading
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -315,6 +316,9 @@ class TimeSeriesStorage:
 
     def get_alerts(self, status: Optional[str] = None,
                    severity: Optional[str] = None,
+                   metric: Optional[str] = None,
+                   start: Optional[float] = None,
+                   end: Optional[float] = None,
                    limit: int = 200) -> List[Dict]:
         """Get alerts with optional filtering."""
         alerts = self.alerts.get("alerts", [])
@@ -322,6 +326,12 @@ class TimeSeriesStorage:
             alerts = [a for a in alerts if a.get("status") == status]
         if severity:
             alerts = [a for a in alerts if a.get("severity") == severity]
+        if metric:
+            alerts = [a for a in alerts if a.get("metric") == metric]
+        if start is not None:
+            alerts = [a for a in alerts if a.get("timestamp", 0) >= start]
+        if end is not None:
+            alerts = [a for a in alerts if a.get("timestamp", 0) <= end]
         return sorted(alerts, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
 
     def add_alert(self, alert: Dict) -> Dict:
@@ -374,6 +384,170 @@ class TimeSeriesStorage:
                 self._save_json(self.alerts_file, self.alerts)
                 return True
         return False
+
+    # Valid forward-only status transitions for batch operations
+    _STATUS_FLOW = {
+        "active": {"acknowledged", "resolved"},
+        "acknowledged": {"resolved"},
+        "resolved": set(),
+        "suppressed": {"acknowledged", "resolved"},
+    }
+
+    def batch_update_alerts(self, action: str,
+                            alert_ids: Optional[List[str]] = None,
+                            metric: Optional[str] = None,
+                            severity: Optional[str] = None,
+                            start: Optional[float] = None,
+                            end: Optional[float] = None,
+                            include_statuses: Optional[List[str]] = None) -> Dict:
+        """
+        Batch acknowledge/resolve alerts.
+
+        Targets are selected either by explicit ``alert_ids`` or by a
+        metric/severity/time-range filter (supports filtered-selection
+        and time-range batch operations).
+        """
+        if action not in ("acknowledge", "resolve"):
+            return {"success": False, "updated": 0, "matched": 0, "updated_ids": []}
+
+        target_status = "acknowledged" if action == "acknowledge" else "resolved"
+        timestamp_field = "acknowledged_at" if action == "acknowledge" else "resolved_at"
+        now = time.time()
+
+        id_set = set(alert_ids) if alert_ids else None
+        matched = 0
+        updated_ids = []
+
+        for alert in self.alerts.get("alerts", []):
+            # Explicit selection wins; otherwise apply filter criteria
+            if id_set is not None:
+                if alert.get("id") not in id_set:
+                    continue
+            else:
+                if metric and alert.get("metric") != metric:
+                    continue
+                if severity and alert.get("severity") != severity:
+                    continue
+                ts = alert.get("timestamp", 0)
+                if start is not None and ts < start:
+                    continue
+                if end is not None and ts > end:
+                    continue
+
+            current = alert.get("status", "active")
+            if include_statuses and current not in include_statuses:
+                continue
+
+            matched += 1
+            if target_status in self._STATUS_FLOW.get(current, set()):
+                alert["status"] = target_status
+                alert[timestamp_field] = now
+                updated_ids.append(alert.get("id"))
+
+        if updated_ids:
+            self._save_json(self.alerts_file, self.alerts)
+
+        return {
+            "success": True,
+            "action": action,
+            "matched": matched,
+            "updated": len(updated_ids),
+            "updated_ids": updated_ids,
+        }
+
+    def get_alert_groups(self, group_by: str = "metric",
+                         status: Optional[str] = None,
+                         severity: Optional[str] = None,
+                         start: Optional[float] = None,
+                         end: Optional[float] = None) -> List[Dict]:
+        """Group alerts by metric (or severity/rule) with per-status counts."""
+        alerts = self.alerts.get("alerts", [])
+        if status:
+            alerts = [a for a in alerts if a.get("status") == status]
+        if severity:
+            alerts = [a for a in alerts if a.get("severity") == severity]
+        if start is not None:
+            alerts = [a for a in alerts if a.get("timestamp", 0) >= start]
+        if end is not None:
+            alerts = [a for a in alerts if a.get("timestamp", 0) <= end]
+
+        groups: Dict[str, Dict] = {}
+        for a in alerts:
+            key = a.get(group_by) or "unknown"
+            group = groups.setdefault(key, {
+                "key": key,
+                "total": 0,
+                "active": 0,
+                "acknowledged": 0,
+                "resolved": 0,
+                "suppressed": 0,
+                "latest_timestamp": 0,
+            })
+            group["total"] += 1
+            st = a.get("status", "active")
+            if st in ("active", "acknowledged", "resolved", "suppressed"):
+                group[st] += 1
+            group["latest_timestamp"] = max(group["latest_timestamp"], a.get("timestamp", 0))
+
+        return sorted(groups.values(), key=lambda g: g["total"], reverse=True)
+
+    def get_alert_trend(self, start: float, end: float,
+                        interval: Optional[int] = None) -> Dict:
+        """
+        Bucket alert counts over a time range.
+
+        Returns aligned time buckets with total counts and per-status
+        breakdowns, suitable for rendering a stacked trend chart.
+        """
+        if end <= start:
+            start, end = end, start
+
+        span = end - start
+        if interval is None or interval <= 0:
+            # Pick ~30-60 buckets based on the requested range
+            targets = [(300, 30), (900, 45), (3600, 60),
+                       (6 * 3600, 72), (24 * 3600, 96)]
+            interval = 300
+            for threshold, max_buckets in targets:
+                if span <= threshold:
+                    interval = max(60, int(span / max_buckets))
+                    break
+            else:
+                interval = max(3600, int(span / 120))
+        # Align bucket boundary to the interval grid
+        first_bucket = math.floor(start / interval) * interval
+        bucket_count = min(int(math.ceil((end - first_bucket) / interval)), 500)
+
+        buckets = []
+        for i in range(bucket_count):
+            t0 = first_bucket + i * interval
+            buckets.append({
+                "timestamp": t0,
+                "total": 0,
+                "active": 0,
+                "acknowledged": 0,
+                "resolved": 0,
+                "suppressed": 0,
+            })
+
+        for a in self.alerts.get("alerts", []):
+            ts = a.get("timestamp", 0)
+            if ts < first_bucket or ts >= first_bucket + bucket_count * interval:
+                continue
+            idx = int((ts - first_bucket) // interval)
+            if 0 <= idx < bucket_count:
+                bucket = buckets[idx]
+                bucket["total"] += 1
+                st = a.get("status", "active")
+                if st in ("active", "acknowledged", "resolved", "suppressed"):
+                    bucket[st] += 1
+
+        return {
+            "start": start,
+            "end": end,
+            "interval": interval,
+            "buckets": buckets,
+        }
 
     def cleanup_suppressed(self):
         """Clean up old suppression entries."""
