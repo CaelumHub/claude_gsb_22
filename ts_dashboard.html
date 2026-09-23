@@ -665,6 +665,35 @@ textarea.form-input {
   flex-shrink: 0;
 }
 
+.alert-checkbox {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.alert-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.alert-group-row {
+  cursor: pointer;
+}
+
+.alert-group-row.active td {
+  background: var(--accent-dim);
+  color: var(--accent-light);
+}
+
 /* ---- Time Range Picker ---- */
 .time-picker {
   display: flex;
@@ -1367,7 +1396,50 @@ textarea.form-input {
           </div>
         </div>
 
+        <!-- 告警趋势图 -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header" style="flex-wrap:wrap;gap:10px">
+            <div class="card-title">📈 告警趋势</div>
+            <div class="time-picker" id="trendRangePicker">
+              <button class="time-btn" onclick="setTrendRange(1, this)">1小时</button>
+              <button class="time-btn" onclick="setTrendRange(6, this)">6小时</button>
+              <button class="time-btn active" onclick="setTrendRange(24, this)">24小时</button>
+              <button class="time-btn" onclick="setTrendRange(168, this)">7天</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-container" id="alertTrendChart" style="height:220px"></div>
+          </div>
+        </div>
+
+        <!-- 按指标分组 -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">📊 按指标分组 <span style="font-size:11px;color:var(--text-muted);font-weight:400">（点击行可过滤下方列表）</span></div>
+            <button class="btn btn-sm" id="clearMetricFilterBtn" style="display:none" onclick="clearMetricFilter()">✕ 清除指标过滤</button>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div id="alertGroups"></div>
+          </div>
+        </div>
+
+        <!-- 告警列表 + 批量操作 -->
         <div class="card">
+          <div class="card-header" style="flex-wrap:wrap;gap:10px">
+            <div class="card-title">告警列表 <span class="badge badge-info" id="selectedCount" style="display:none">已选 0 条</span></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-sm" onclick="bulkAckSelected()">✓ 批量确认</button>
+              <button class="btn btn-sm" onclick="bulkResolveSelected()">✔ 批量解决</button>
+            </div>
+          </div>
+          <div style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--text-muted);white-space:nowrap">按时间范围批量操作:</span>
+            <input type="datetime-local" class="form-input" id="bulkStart" step="1" style="width:auto;padding:4px 8px;font-size:12px">
+            <span style="font-size:12px;color:var(--text-muted)">至</span>
+            <input type="datetime-local" class="form-input" id="bulkEnd" step="1" style="width:auto;padding:4px 8px;font-size:12px">
+            <button class="btn btn-sm" onclick="bulkByTimeRange('acknowledge')">确认该范围</button>
+            <button class="btn btn-sm" onclick="bulkByTimeRange('resolve')">解决该范围</button>
+          </div>
           <div class="card-body" style="padding:0">
             <div id="alertsList"></div>
           </div>
@@ -1527,11 +1599,15 @@ let state = {
   selectedDashMetrics: new Set(['cpu.usage', 'memory.usage']),
   historyData: null,
   timeRangeMinutes: 15,
+  selectedAlerts: new Set(),
+  alertMetricFilter: '',
+  trendHours: 24,
 };
 
 let lineChart = null;
 let heatmapChart = null;
 let historyChartInstance = null;
+let alertTrendChartInstance = null;
 let refreshTimer = null;
 
 // ====== Init ======
@@ -2083,19 +2159,27 @@ async function loadAlerts() {
   state.alerts = data.alerts || [];
   renderAlerts();
   updateAlertBadge();
+  loadAlertGroups();
+  loadAlertTrend();
 }
 
 function filterAlerts() {
   renderAlerts();
 }
 
-function renderAlerts() {
+function getFilteredAlerts() {
   const statusFilter = document.getElementById('alertStatusFilter').value;
   const severityFilter = document.getElementById('alertSeverityFilter').value;
 
   let filtered = [...state.alerts];
   if (statusFilter) filtered = filtered.filter(a => a.status === statusFilter);
   if (severityFilter) filtered = filtered.filter(a => a.severity === severityFilter);
+  if (state.alertMetricFilter) filtered = filtered.filter(a => a.metric === state.alertMetricFilter);
+  return filtered;
+}
+
+function renderAlerts() {
+  const filtered = getFilteredAlerts();
 
   // Update counts
   const counts = { active: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
@@ -2108,10 +2192,19 @@ function renderAlerts() {
   const container = document.getElementById('alertsList');
   if (!filtered.length) {
     container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">暂无告警</div></div>';
+    updateSelectedCount();
     return;
   }
 
-  container.innerHTML = filtered.map(a => {
+  const allSelected = filtered.every(a => state.selectedAlerts.has(a.id));
+  const selectAllBar = `
+    <div class="alert-select-all">
+      <input type="checkbox" class="alert-checkbox" style="margin-top:0" ${allSelected ? 'checked' : ''}
+             onchange="toggleSelectAllAlerts(this.checked)" title="全选当前过滤结果">
+      <span>全选（${filtered.length} 条）</span>
+    </div>`;
+
+  container.innerHTML = selectAllBar + filtered.map(a => {
     const severityClass = a.severity === 'critical' ? 'danger' : a.severity === 'warning' ? 'warning' : 'info';
     const statusBadge = a.status === 'active' ? 'badge-danger' :
                         a.status === 'acknowledged' ? 'badge-warning' :
@@ -2119,9 +2212,11 @@ function renderAlerts() {
     const statusText = a.status === 'active' ? '活跃' :
                        a.status === 'acknowledged' ? '已确认' :
                        a.status === 'resolved' ? '已解决' : '已抑制';
+    const checked = state.selectedAlerts.has(a.id) ? 'checked' : '';
 
     return `
       <div class="alert-item">
+        <input type="checkbox" class="alert-checkbox" ${checked} onchange="toggleSelectAlert('${a.id}', this.checked)">
         <div class="alert-severity ${a.severity || 'warning'}"></div>
         <div class="alert-content">
           <div class="alert-title">${a.metric} · ${a.rule_name || a.algorithm || '异常'}</div>
@@ -2141,6 +2236,205 @@ function renderAlerts() {
       </div>
     `;
   }).join('');
+
+  updateSelectedCount();
+}
+
+// ---- Alert selection & batch operations ----
+function toggleSelectAlert(id, checked) {
+  if (checked) {
+    state.selectedAlerts.add(id);
+  } else {
+    state.selectedAlerts.delete(id);
+  }
+  updateSelectedCount();
+}
+
+function toggleSelectAllAlerts(checked) {
+  const filtered = getFilteredAlerts();
+  filtered.forEach(a => {
+    if (checked) state.selectedAlerts.add(a.id);
+    else state.selectedAlerts.delete(a.id);
+  });
+  renderAlerts();
+}
+
+function updateSelectedCount() {
+  const el = document.getElementById('selectedCount');
+  const n = state.selectedAlerts.size;
+  el.textContent = `已选 ${n} 条`;
+  el.style.display = n > 0 ? '' : 'none';
+}
+
+async function bulkAckSelected() {
+  await bulkActionOnSelected('acknowledge');
+}
+
+async function bulkResolveSelected() {
+  await bulkActionOnSelected('resolve');
+}
+
+async function bulkActionOnSelected(action) {
+  const ids = [...state.selectedAlerts];
+  if (!ids.length) { showToast('请先勾选告警', 'error'); return; }
+
+  const result = await api('/api/alerts/batch', {
+    method: 'POST',
+    body: { action, alert_ids: ids }
+  });
+  if (result?.success) {
+    showToast(`已${action === 'acknowledge' ? '确认' : '解决'} ${result.updated} 条告警`, 'success');
+    state.selectedAlerts.clear();
+    await loadAlerts();
+  } else {
+    showToast('批量操作失败', 'error');
+  }
+}
+
+async function bulkByTimeRange(action) {
+  const startVal = document.getElementById('bulkStart').value;
+  const endVal = document.getElementById('bulkEnd').value;
+  if (!startVal || !endVal) { showToast('请选择起止时间', 'error'); return; }
+
+  const start = new Date(startVal).getTime() / 1000;
+  const end = new Date(endVal).getTime() / 1000;
+  if (isNaN(start) || isNaN(end) || end <= start) { showToast('时间范围无效', 'error'); return; }
+
+  const label = action === 'acknowledge' ? '确认' : '解决';
+  const result = await api('/api/alerts/batch', {
+    method: 'POST',
+    body: { action, start, end }
+  });
+  if (result?.success) {
+    showToast(`已${label}该时间范围内 ${result.updated} 条告警`, 'success');
+    await loadAlerts();
+  } else {
+    showToast('批量操作失败', 'error');
+  }
+}
+
+// ---- Alert groups (by metric) ----
+async function loadAlertGroups() {
+  const data = await api('/api/alerts/groups');
+  if (!data) return;
+  renderAlertGroups(data.groups || []);
+}
+
+function renderAlertGroups(groups) {
+  const container = document.getElementById('alertGroups');
+  document.getElementById('clearMetricFilterBtn').style.display = state.alertMetricFilter ? '' : 'none';
+
+  if (!groups.length) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">暂无告警分组数据</div></div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>指标</th>
+          <th>告警总数</th>
+          <th>活跃</th>
+          <th>已确认</th>
+          <th>已解决</th>
+          <th>严重</th>
+          <th>警告</th>
+          <th>最近告警时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${groups.map(g => `
+          <tr class="alert-group-row ${state.alertMetricFilter === g.metric ? 'active' : ''}"
+              onclick="filterByMetric('${g.metric}')" title="点击过滤该指标">
+            <td style="font-family:var(--font-mono);color:var(--text-primary)">${g.metric}</td>
+            <td><strong>${g.total}</strong></td>
+            <td>${g.active ? `<span class="badge badge-danger">${g.active}</span>` : '0'}</td>
+            <td>${g.acknowledged ? `<span class="badge badge-warning">${g.acknowledged}</span>` : '0'}</td>
+            <td>${g.resolved ? `<span class="badge badge-success">${g.resolved}</span>` : '0'}</td>
+            <td>${g.critical || 0}</td>
+            <td>${g.warning || 0}</td>
+            <td>${formatTime(g.latest_timestamp)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+}
+
+function filterByMetric(metric) {
+  state.alertMetricFilter = (state.alertMetricFilter === metric) ? '' : metric;
+  renderAlerts();
+  loadAlertGroups();
+}
+
+function clearMetricFilter() {
+  state.alertMetricFilter = '';
+  renderAlerts();
+  loadAlertGroups();
+}
+
+// ---- Alert trend chart ----
+function setTrendRange(hours, btn) {
+  state.trendHours = hours;
+  document.querySelectorAll('#trendRangePicker .time-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadAlertTrend();
+}
+
+async function loadAlertTrend() {
+  const end = Date.now() / 1000;
+  const start = end - state.trendHours * 3600;
+  // Aim for ~40 buckets, but no more than one per minute
+  const buckets = Math.max(6, Math.min(48, Math.round(state.trendHours * 3600 / 60)));
+  const data = await api(`/api/alerts/trend?start=${start}&end=${end}&buckets=${buckets}`);
+  if (!data) return;
+  renderAlertTrend(data);
+}
+
+function renderAlertTrend(trend) {
+  const el = document.getElementById('alertTrendChart');
+  if (!el) return;
+  if (!alertTrendChartInstance) {
+    alertTrendChartInstance = echarts.init(el);
+  }
+
+  const buckets = trend.buckets || [];
+  const times = buckets.map(b => formatTime(b.timestamp));
+
+  alertTrendChartInstance.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(21,29,46,0.95)',
+      borderColor: '#1e2d42',
+      textStyle: { color: '#e2e8f0', fontSize: 12 }
+    },
+    legend: {
+      data: ['严重', '警告', '信息'],
+      textStyle: { color: '#94a3b8', fontSize: 11 },
+      top: 0
+    },
+    grid: { left: 40, right: 16, top: 30, bottom: 24 },
+    xAxis: {
+      type: 'category',
+      data: times,
+      axisLabel: { color: '#64748b', fontSize: 10 },
+      axisLine: { lineStyle: { color: '#1e2d42' } }
+    },
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { color: '#64748b', fontSize: 10 },
+      splitLine: { lineStyle: { color: '#1e2d42' } }
+    },
+    series: [
+      { name: '严重', type: 'bar', stack: 'alerts', data: buckets.map(b => b.critical), itemStyle: { color: '#ef4444' } },
+      { name: '警告', type: 'bar', stack: 'alerts', data: buckets.map(b => b.warning), itemStyle: { color: '#f59e0b' } },
+      { name: '信息', type: 'bar', stack: 'alerts', data: buckets.map(b => b.info), itemStyle: { color: '#3b82f6' } }
+    ]
+  });
+  alertTrendChartInstance.resize();
 }
 
 async function ackAlert(id) {
@@ -2301,6 +2595,7 @@ function initCharts() {
     lineChart?.resize();
     heatmapChart?.resize();
     historyChartInstance?.resize();
+    alertTrendChartInstance?.resize();
   });
 
   // Set initial time range
@@ -2308,6 +2603,10 @@ function initCharts() {
   const start = new Date(now.getTime() - 15 * 60000);
   document.getElementById('historyStart').value = formatDatetimeLocal(start);
   document.getElementById('historyEnd').value = formatDatetimeLocal(now);
+
+  // Default bulk-operation time range: last hour
+  document.getElementById('bulkStart').value = formatDatetimeLocal(new Date(now.getTime() - 3600000));
+  document.getElementById('bulkEnd').value = formatDatetimeLocal(now);
 }
 
 // ====== Header Stats ======

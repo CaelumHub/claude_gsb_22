@@ -97,6 +97,10 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard(query)
             elif path == '/api/alerts':
                 self._handle_get_alerts(query)
+            elif path == '/api/alerts/groups':
+                self._handle_alert_groups(query)
+            elif path == '/api/alerts/trend':
+                self._handle_alert_trend(query)
             elif path == '/api/rules':
                 self._handle_get_rules()
             elif path == '/api/sources':
@@ -126,6 +130,8 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
                 self._handle_acknowledge_alert()
             elif path == '/api/alerts/resolve':
                 self._handle_resolve_alert()
+            elif path == '/api/alerts/batch':
+                self._handle_batch_alert_action()
             elif path == '/api/rules':
                 self._handle_add_rule()
             elif path == '/api/sources':
@@ -365,6 +371,65 @@ class TimeSeriesHandler(BaseHTTPRequestHandler):
 
         success = self.storage.resolve_alert(alert_id)
         self._send_json({"success": success})
+
+    def _handle_alert_groups(self, query: Dict):
+        """Get alert counts grouped by metric."""
+        status = query.get("status", [None])[0]
+        severity = query.get("severity", [None])[0]
+        start = query.get("start", [None])[0]
+        end = query.get("end", [None])[0]
+
+        groups = self.storage.get_alert_groups(
+            status=status,
+            severity=severity,
+            start=float(start) if start else None,
+            end=float(end) if end else None
+        )
+        self._send_json({"groups": groups, "count": len(groups)})
+
+    def _handle_alert_trend(self, query: Dict):
+        """Get alert counts bucketed over a time range."""
+        now = time.time()
+        start = float(query.get("start", [now - 86400])[0])
+        end = float(query.get("end", [now])[0])
+        buckets = int(query.get("buckets", [24])[0])
+
+        trend = self.storage.get_alert_trend(start, end, buckets)
+        self._send_json(trend)
+
+    def _handle_batch_alert_action(self):
+        """Batch acknowledge/resolve alerts by id list or by filters."""
+        body = self._read_body()
+        action = body.get("action")
+        if action not in ("acknowledge", "resolve"):
+            self._send_error("Missing or invalid 'action' (acknowledge|resolve)")
+            return
+
+        alert_ids = body.get("alert_ids")
+        if alert_ids is not None and not isinstance(alert_ids, list):
+            self._send_error("'alert_ids' must be an array")
+            return
+
+        # Without an explicit id list, require at least one filter criterion
+        # to avoid accidentally updating every alert.
+        if not alert_ids:
+            has_filter = any(body.get(k) is not None for k in
+                             ("status", "severity", "metric", "start", "end"))
+            if not has_filter:
+                self._send_error("Provide 'alert_ids' or at least one filter "
+                                 "(status/severity/metric/start/end)")
+                return
+
+        updated = self.storage.bulk_update_alerts(
+            action,
+            alert_ids=alert_ids,
+            status=body.get("status"),
+            severity=body.get("severity"),
+            metric=body.get("metric"),
+            start=float(body["start"]) if body.get("start") is not None else None,
+            end=float(body["end"]) if body.get("end") is not None else None
+        )
+        self._send_json({"success": True, "action": action, "updated": updated})
 
     def _handle_get_rules(self):
         """Get all rules."""

@@ -375,6 +375,121 @@ class TimeSeriesStorage:
                 return True
         return False
 
+    def get_alert_groups(self, status: Optional[str] = None,
+                         severity: Optional[str] = None,
+                         start: Optional[float] = None,
+                         end: Optional[float] = None) -> List[Dict]:
+        """Group alerts by metric with status/severity breakdowns."""
+        groups: Dict[str, Dict] = {}
+        for a in self.alerts.get("alerts", []):
+            if status and a.get("status") != status:
+                continue
+            if severity and a.get("severity") != severity:
+                continue
+            ts = a.get("timestamp", 0)
+            if start is not None and ts < start:
+                continue
+            if end is not None and ts > end:
+                continue
+
+            metric = a.get("metric", "unknown")
+            g = groups.setdefault(metric, {
+                "metric": metric, "total": 0,
+                "active": 0, "acknowledged": 0, "resolved": 0, "suppressed": 0,
+                "critical": 0, "warning": 0, "info": 0,
+                "latest_timestamp": 0
+            })
+            g["total"] += 1
+            if a.get("status") in ("active", "acknowledged", "resolved", "suppressed"):
+                g[a["status"]] += 1
+            if a.get("severity") in ("critical", "warning", "info"):
+                g[a["severity"]] += 1
+            g["latest_timestamp"] = max(g["latest_timestamp"], ts)
+
+        return sorted(groups.values(), key=lambda x: x["total"], reverse=True)
+
+    def get_alert_trend(self, start: float, end: float,
+                        buckets: int = 24) -> Dict:
+        """Alert counts bucketed over a time range for trend charts."""
+        buckets = max(1, min(int(buckets), 200))
+        if end <= start:
+            end = start + 1
+        bucket_size = (end - start) / buckets
+
+        result = [{
+            "timestamp": start + i * bucket_size,
+            "count": 0, "critical": 0, "warning": 0, "info": 0
+        } for i in range(buckets)]
+
+        for a in self.alerts.get("alerts", []):
+            ts = a.get("timestamp", 0)
+            if ts < start or ts > end:
+                continue
+            idx = min(int((ts - start) / bucket_size), buckets - 1)
+            bucket = result[idx]
+            bucket["count"] += 1
+            if a.get("severity") in ("critical", "warning", "info"):
+                bucket[a["severity"]] += 1
+
+        return {
+            "start": start,
+            "end": end,
+            "bucket_size": bucket_size,
+            "buckets": result
+        }
+
+    def bulk_update_alerts(self, action: str,
+                           alert_ids: Optional[List[str]] = None,
+                           status: Optional[str] = None,
+                           severity: Optional[str] = None,
+                           metric: Optional[str] = None,
+                           start: Optional[float] = None,
+                           end: Optional[float] = None) -> int:
+        """Bulk acknowledge/resolve alerts by id list or by filters.
+
+        Returns the number of alerts updated.
+        """
+        if action not in ("acknowledge", "resolve"):
+            return 0
+
+        new_status = "acknowledged" if action == "acknowledge" else "resolved"
+        ts_field = "acknowledged_at" if action == "acknowledge" else "resolved_at"
+        now = time.time()
+        id_set = set(alert_ids) if alert_ids else None
+
+        updated = 0
+        for a in self.alerts.get("alerts", []):
+            if id_set is not None:
+                if a.get("id") not in id_set:
+                    continue
+            else:
+                if status and a.get("status") != status:
+                    continue
+                if severity and a.get("severity") != severity:
+                    continue
+                if metric and a.get("metric") != metric:
+                    continue
+                ts = a.get("timestamp", 0)
+                if start is not None and ts < start:
+                    continue
+                if end is not None and ts > end:
+                    continue
+
+            # Skip transitions that don't make sense
+            current = a.get("status")
+            if action == "acknowledge" and current in ("acknowledged", "resolved"):
+                continue
+            if action == "resolve" and current == "resolved":
+                continue
+
+            a["status"] = new_status
+            a[ts_field] = now
+            updated += 1
+
+        if updated:
+            self._save_json(self.alerts_file, self.alerts)
+        return updated
+
     def cleanup_suppressed(self):
         """Clean up old suppression entries."""
         suppressed = self.alerts.get("suppressed", {})

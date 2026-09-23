@@ -35,7 +35,7 @@ python3 server.py 8080
 1. **实时仪表盘** - ECharts 多指标曲线图、热力图、统计卡片
 2. **数据源配置** - 管理 API/模拟器/文件数据源
 3. **历史查询** - 时间范围选择、LTTB 降采样、CSV 导出
-4. **异常告警** - 告警列表、状态过滤、确认/解决操作
+4. **异常告警** - 告警列表、状态过滤、确认/解决操作、按指标分组统计、批量确认/解决、按时间范围批量操作、告警趋势图
 5. **规则管理** - CRUD 检测规则、多算法配置
 
 ### 后端核心能力
@@ -106,6 +106,23 @@ curl -X POST http://localhost:8080/api/alerts/acknowledge \
 # 解决告警
 curl -X POST http://localhost:8080/api/alerts/resolve \
   -d '{"alert_id":"alert_xxx"}'
+
+# 按指标分组统计告警数量
+curl http://localhost:8080/api/alerts/groups
+curl "http://localhost:8080/api/alerts/groups?status=active&start=1695000000&end=1695003600"
+
+# 告警趋势（按时间桶统计数量，用于趋势图）
+curl "http://localhost:8080/api/alerts/trend?start=1695000000&end=1695003600&buckets=24"
+
+# 批量操作：按告警 ID 列表
+curl -X POST http://localhost:8080/api/alerts/batch \
+  -d '{"action":"acknowledge","alert_ids":["alert_1","alert_2"]}'
+
+# 批量操作：按过滤条件（时间范围/状态/级别/指标，至少提供一个）
+curl -X POST http://localhost:8080/api/alerts/batch \
+  -d '{"action":"resolve","start":1695000000,"end":1695003600}'
+curl -X POST http://localhost:8080/api/alerts/batch \
+  -d '{"action":"resolve","metric":"cpu.usage","severity":"critical"}'
 ```
 
 ### 模拟器
